@@ -50,6 +50,6 @@ deactivate
 
 ## 视频教程
 ```bash
-[https://www.bilibili.com/video/BV1rRqkYdEkm](https://www.bilibili.com/video/BV1X6kVY3EZj/?vd_source=92741bd354e6564f186e2d5a4a00e64b)
+https://www.bilibili.com/video/BV1X6kVY3EZj/?vd_source=92741bd354e6564f186e2d5a4a00e64b
 ```
 
