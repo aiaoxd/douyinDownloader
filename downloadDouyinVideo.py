@@ -28,7 +28,8 @@ def download_video(url):
     if response.status_code == 200:
         # 获取文件的总大小
         total_size = int(response.headers.get('Content-Length', 0))
-        video_path = f'video/{sanitize_filename(title)}.mp4'
+        limit_title = title[:50]
+        video_path = f'video/{sanitize_filename(limit_title)}.mp4'
 
         full_path = os.path.join(os.getcwd(),video_path)
         # 以二进制流的方式保存文件，带进度条
@@ -66,55 +67,102 @@ def get_video_url(url):
 
 
 def get_modalid_from_share_link(share_link):
-    # 正则表达式
-    pattern = r'https://v\.douyin\.com/[a-zA-Z0-9]+/?'
+    """从分享链接中提取 modal_id"""
 
-    # 查找所有匹配的 URL
+    # 先尝试从 URL 中直接提取 modal_id 参数
+    modal_id_pattern = r'[?&]modal_id=(\d+)'
+    match = re.search(modal_id_pattern, share_link)
+    if match:
+        modal_id = match.group(1)
+        print(f"Extracted modal_id from direct modal_id= parameter: {modal_id}")
+        return modal_id
+
+    # 匹配视频链接，提取视频的 modal_id
+    video_pattern = r'https://www\.douyin\.com/video/(\d+)'
+    match = re.search(video_pattern, share_link)
+    if match:
+        modal_id = match.group(1)
+        print(f"Extracted modal_id from video link: {modal_id}")
+        return modal_id
+
+    # 匹配带有 modal_id 参数的用户链接
+    user_pattern = r'https://www\.douyin\.com/user/.+?modal_id=(\d+)'
+
+    # 匹配带有 modal_id 参数的 discover 链接
+    discover_pattern = r'https://www\.douyin\.com/discover\?modal_id=(\d+)'
+
+    # 尝试匹配带有 modal_id 参数的用户链接
+    match = re.search(user_pattern, share_link)
+    if match:
+        modal_id = match.group(1)
+        print(f"Extracted modal_id from user link: {modal_id}")
+        return modal_id
+
+    # 尝试匹配 discover 链接中的 modal_id
+    match = re.search(discover_pattern, share_link)
+    if match:
+        modal_id = match.group(1)
+        print(f"Extracted modal_id from discover link: {modal_id}")
+        return modal_id
+
+    # 如果没有找到，继续处理分享链接
+    pattern = r'https://v\.douyin\.com/[a-zA-Z0-9]+/?'
     try:
+        # 提取分享链接中的 URL 部分
         url = re.findall(pattern, share_link)[0]
     except Exception as e:
-        print('未找到链接')
+        print('Invalid URL')
         return None
 
-    print(url)
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'cookie': '',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    }
+    print(f"Extracted URL: {url}")
 
-    try:
-        # 发起 GET 请求，设置超时时间防止卡住
-        response = requests.get(url, headers=headers,allow_redirects=True)
+    # 重试机制，最多重试5次
+    max_retries = 5
+    retries = 0
+    while retries < max_retries:
+        try:
+            # 使用线程来进行请求
+            response = make_request(url)
 
-        # 如果响应 URL 存在
-        if response.url:
-            print(f"Final Redirect URL: {response.url}")
+            # 检查是否成功获取最终重定向 URL
+            if response.url:
+                print(f"Final Redirect URL: {response.url}")
+                print(response.url)
+                # 提取 video modal_id
+                pattern = r'https://www\.douyin\.com/video/(\d+)'
+                match = re.search(pattern, response.url)
 
-            # 使用正则表达式查找视频 ID
-            pattern = r'https://www\.douyin\.com/video/(\d+)'
-            match = re.search(pattern, response.url)
-
-            if match:
-                # 提取视频 ID
-                modal_id = match.group(1)
-                print(f"提取的 modal_id: {modal_id}")
-                return modal_id
+                if match:
+                    modal_id = match.group(1)
+                    print(f"Extracted modal_id: {modal_id}")
+                    return modal_id
+                else:
+                    print("No modal_id found in final URL.")
+                    retries += 1
+                    time.sleep(2)  # 等待 2 秒再尝试
+                    print(f"Retrying... ({retries}/{max_retries})")
             else:
-                print("没有找到 modal_id")
-                return None
-        else:
-            print("未找到有效的响应 URL")
-            return None
+                print("Invalid response URL. Retrying...")
+                retries += 1
+                time.sleep(2)  # 等待 2 秒再尝试
+                print(f"Retrying... ({retries}/{max_retries})")
 
-    except requests.exceptions.Timeout:
-        print("请求超时")
-        return None
+        except requests.exceptions.RequestException as e:
+            retries += 1
+            print(f"Request error: {e}. Retrying... ({retries}/{max_retries})")
+            time.sleep(2)  # 等待 2 秒再尝试
+
+    print("Max retries reached. Could not retrieve the modal_id.")
+    return None
+
+def make_request( url):
+    """处理请求的函数，包含超时设置"""
+    try:
+        response = requests.get(url, headers=headers, allow_redirects=True, timeout=10)
+        return response
     except requests.exceptions.RequestException as e:
-        print(f"请求发生错误: {e}")
-        return None
-
-
+        print(f"Request error: {e}")
+        raise
 if __name__ == '__main__':
     title = ''
 
