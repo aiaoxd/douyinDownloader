@@ -477,17 +477,45 @@ class DouyinDownloader:
     # ===================== 浏览器监听方案（接自 v2：Playwright 监听 aweme/detail） =====================
     @staticmethod
     def _find_chrome():
-        """返回本机 Chrome 可执行文件路径，找不到返回 None"""
-        candidates = [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            os.path.expanduser(
-                '~/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/'
-                'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
-            ),
-        ]
-        for p in candidates:
-            if os.path.exists(p):
+        """返回可用的 Chromium 内核可执行文件路径，找不到返回 None。
+
+        优先用系统安装的 Google Chrome（Cookie / 登录态更完整，反风控表现更好），
+        找不到再回退到 playwright 自带的 Chromium —— 其目录名带版本号（如 chromium-1234），
+        且会随 playwright 升级变化，因此用通配符动态匹配，不写死。
+        """
+        # 1) 系统安装的 Chrome / Chromium
+        for p in (
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',  # macOS
+            '/usr/bin/google-chrome',                                        # Linux
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            os.path.expandvars(r'%ProgramFiles%\Google\Chrome\Application\chrome.exe'),      # Windows
+            os.path.expandvars(r'%LocalAppData%\Google\Chrome\Application\chrome.exe'),
+        ):
+            if p and os.path.exists(p):
                 return p
+
+        # 2) 回退到 playwright 自带 Chromium
+        sub_patterns = (
+            'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+            'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+            'chrome-linux/chrome',
+            'chrome-win/chrome.exe',
+        )
+        for cache_dir in (
+            os.path.expanduser('~/Library/Caches/ms-playwright'),  # macOS
+            os.path.expanduser('~/.cache/ms-playwright'),          # Linux
+            os.path.expandvars(r'%LocalAppData%\ms-playwright'),   # Windows
+        ):
+            if not os.path.isdir(cache_dir):
+                continue
+            for name in ('chromium-*', 'chromium_headless_shell-*'):
+                for browser_dir in sorted(glob(os.path.join(cache_dir, name))):
+                    for sub in sub_patterns:
+                        p = os.path.join(browser_dir, sub)
+                        if os.path.exists(p):
+                            return p
         return None
 
     def _on_response(self, resp):
