@@ -5,6 +5,11 @@ from urllib.parse import unquote
 from tqdm import tqdm
 import requests
 
+# 归档说明（2026-09-18）：本文件是 2024 年的旧版实现，解析 RENDER_DATA 的方案已失效，
+# 仅作历史留存，新版请使用仓库根目录的 douyinDownloader.py。
+# Cookie 一律从环境变量读取 —— 旧版本曾把作者的真实 Cookie 写死在源码里，已从 Git 历史中清除。
+__COOKIE__ = os.environ.get('DOUYIN_COOKIE', '')
+
 def sanitize_filename(title):
     # 替换非法字符（例如 Windows 系统中的非法字符）
     sanitized_title = re.sub(r'[<>:"/\\|?*]', '_', title)  # 将非法字符替换为 '_'
@@ -50,7 +55,7 @@ def download_video(url):
 def get_video_url(url):
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'cookie': '',
+        'cookie': __COOKIE__,
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     }
     response = requests.get(url,headers=headers)
@@ -169,7 +174,7 @@ if __name__ == '__main__':
     while True:
         headers = {
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'cookie': '',
+            'cookie': __COOKIE__,
             'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         }
 

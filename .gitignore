@@ -1,0 +1,35 @@
+# ---- 凭据 / 私密数据：绝对不要提交 ----
+cookies.json
+config.ini
+*.token
+.env
+
+# ---- 下载产物 ----
+downloads/
+temp/
+cover/
+*.mp4
+*.mp3
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.ts
+*.m4s
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+env/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# ---- 日志 ----
+*.log
