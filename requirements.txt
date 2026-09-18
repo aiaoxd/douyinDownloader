@@ -1,4 +1,8 @@
 # douyinDownloader 运行依赖（Python 3.9+）
+#
+# 装这些就能跑 —— 默认走「协议模式」（纯 HTTP，不启动浏览器）。
+# 另需本机安装 ffmpeg 与 ffprobe（图文 / 实况图合成用，命令行能跑 ffmpeg -version 即可）。
+# 想要浏览器回退能力，再另装 requirements-browser.txt。
 
 # 网络请求
 requests>=2.28.0
@@ -6,12 +10,8 @@ requests>=2.28.0
 # 下载进度条
 tqdm>=4.65.0
 
-# 图文作品的图片规格化（统一转 JPEG 并 resize）
+# 图文作品的图片规格化（抖音图文下下来是 webp，需转成 JPEG 再合成）
 Pillow>=9.0.0
 
-# 视频/音频合并（同时需要本机装好 ffmpeg 与 ffprobe）
+# 视频/音频封装与时长解析（底层仍调用系统 ffmpeg）
 ffmpeg-python>=0.2.0
-
-# 浏览器监听方案：监听 aweme/detail 接口获取真实播放地址
-# pip 安装后还需执行一次：playwright install chromium
-playwright>=1.40.0

@@ -1,0 +1,13 @@
+# 可选依赖：浏览器回退模式
+#
+# 只有「协议模式被风控」时才需要。装着它可以自动回退到浏览器，
+# 不装也完全能用（只是协议被风控时该视频会失败，不会自动换路子）。
+#
+# 安装：
+#   pip install -r requirements-browser.txt
+#   playwright install chromium      # 这一步会下载一份 Chromium（约 150MB+）
+#
+# 注意：如果本机已装 Google Chrome，脚本会优先用它，
+# 那就不必执行 playwright install chromium（省掉那份下载）。
+
+playwright>=1.40.0

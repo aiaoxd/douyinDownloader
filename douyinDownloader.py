@@ -34,9 +34,27 @@ class DouyinDownloader:
     # 浏览器监听方案使用的桌面 UA
     UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
           '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+    # 协议模式（纯 HTTP）使用的移动端 UA —— 分享页按移动端渲染才会带 _ROUTER_DATA
+    MOBILE_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 '
+                 '(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1')
+    # 分享页域名。实测：iesdouyin 在「带登录 Cookie」时会下发 argus 挑战页，
+    # douyin.com 则正常，所以 douyin.com 放第一个。
+    SHARE_HOSTS = ('https://www.douyin.com', 'https://www.iesdouyin.com')
+    # 协议模式连续失败这么多次后，本次运行不再尝试（自动熔断，避免逐个视频白等）
+    PROTOCOL_FAIL_LIMIT = 3
 
     def __init__(self, share_link, download_folder='doyinVideo'):
         self.share_link = share_link
+
+        # 取数方式：auto（协议优先，遇风控自动回退浏览器）| protocol（只用协议）| browser（只用浏览器）
+        self.fetch_mode = (os.environ.get('DOUYIN_FETCH_MODE', 'auto') or 'auto').strip().lower()
+        if self.fetch_mode not in ('auto', 'protocol', 'browser'):
+            print(f'⚠️ 无法识别的 DOUYIN_FETCH_MODE={self.fetch_mode!r}，已回退为 auto')
+            self.fetch_mode = 'auto'
+        # 协议模式请求的清晰度。实测上限为 1080p（填 4k/origin 都会回落到 1080p）
+        self.protocol_ratio = (os.environ.get('DOUYIN_PROTOCOL_RATIO', '1080p') or '1080p').strip()
+        self._protocol_fail_streak = 0
+        self._protocol_disabled = False
 
         # 使用统一路径配置
         self.current_date = datetime.now().strftime('%Y-%m-%d')
@@ -614,12 +632,137 @@ class DouyinDownloader:
         m = re.search(r'(?:video/|modal_id=)(\d+)', link)
         return m.group(1) if m else None
 
-    def get_aweme_detail(self, video_id, wait_seconds=40, retries=2):
-        """打开视频页并监听 aweme/detail，返回 aweme_detail 字典；失败返回 None。
+    # ===================== 协议模式（纯 HTTP，不需要浏览器） =====================
+    @staticmethod
+    def _normalize_share_detail(item, ratio='1080p'):
+        """把分享页 _ROUTER_DATA 里的作品对象，规整成与浏览器方案一致的 aweme_detail 结构。
 
-        冷启动（浏览器刚启动后的首个导航）偶发需要更久才能触发详情请求，
-        因此内置重试：每次重试重新打开页面再等待一次，第二次浏览器已 warm 几乎必成。
+        这样下游（_pick_video_url / download_image / download_audio /
+        combine_static_photo / combine_live_photo）完全不用改。
         """
+        images = item.get('images') or []
+        has_live = any((im or {}).get('video') for im in images)
+        if images:
+            media_type = 42 if has_live else 2      # 42=实况图，2=图文
+        else:
+            media_type = 1                          # 普通视频
+
+        video = item.get('video') or {}
+        # 深拷贝，避免改动原始对象
+        music = json.loads(json.dumps(item.get('music') or {}))
+
+        # 图文 / 实况图常常没有独立音频流，背景音乐被挂在 video.play_addr 上（伪装成 video 的 mp3）
+        inner_mp3 = []
+        for u in ((video.get('play_addr') or {}).get('url_list') or []):
+            m = re.search(r'video_id=([^&]+)', u)
+            if m and '.mp3' in m.group(1):
+                inner_mp3.append(unquote(m.group(1)))
+        if inner_mp3:
+            play_url = music.setdefault('play_url', {})
+            existing = list(play_url.get('url_list') or [])
+            play_url['url_list'] = existing + [u for u in inner_mp3 if u not in existing]
+
+        detail = {
+            'aweme_id': item.get('aweme_id'),
+            'desc': item.get('desc') or '',
+            'media_type': media_type,
+            'images': images,
+            'music': music,
+            'video': video,
+        }
+
+        # 普通视频：分享页只给带水印的 720p playwm 地址，
+        # 换成 /aweme/v1/play/ 接口并显式指定清晰度，即可拿到无水印 1080p 单文件（已含音轨）
+        if media_type == 1:
+            uri = (video.get('play_addr') or {}).get('uri')
+            if uri:
+                detail['video'] = {
+                    'video_id': uri,
+                    'duration': video.get('duration'),
+                    'play_addr': {
+                        'uri': uri,
+                        'url_list': [f'https://aweme.snssdk.com/aweme/v1/play/'
+                                     f'?ratio={ratio}&video_id={uri}'],
+                    },
+                }
+        return detail
+
+    def _detail_from_share_page(self, video_id):
+        """纯 HTTP 从分享页的 _ROUTER_DATA 取作品数据。
+
+        返回 (detail, reason)：成功时 detail 为规整后的作品字典、reason 为空串；
+        失败时 detail 为 None、reason 说明原因（风控挑战页 / 已删除 / 网络异常）。
+        """
+        headers = {k: v for k, v in self.headers.items() if k.lower() != 'user-agent'}
+        headers['User-Agent'] = self.MOBILE_UA
+        last_reason = '未知原因'
+
+        for host in self.SHARE_HOSTS:
+            url = f'{host}/share/video/{video_id}/'
+            try:
+                r = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+            except Exception as e:
+                last_reason = f'请求异常 {type(e).__name__}: {e}'
+                continue
+            if r.status_code != 200:
+                last_reason = f'HTTP {r.status_code}'
+                continue
+
+            text = r.text
+            if '_ROUTER_DATA' not in text:
+                # 命中 argus 风控挑战页（约 2.5KB 的空壳页）
+                last_reason = f'命中风控挑战页（{len(text)} 字节，无 _ROUTER_DATA）'
+                continue
+
+            m = re.search(r'_ROUTER_DATA\s*=\s*(\{.*?\})\s*</script>', text, re.S)
+            if not m:
+                last_reason = '页面里的 _ROUTER_DATA 无法定位'
+                continue
+            try:
+                data, _ = json.JSONDecoder().raw_decode(m.group(1))
+            except Exception as e:
+                last_reason = f'_ROUTER_DATA 解析失败: {e}'
+                continue
+
+            item = None
+            for _, node in (data.get('loaderData') or {}).items():
+                if isinstance(node, dict) and node.get('videoInfoRes'):
+                    lst = node['videoInfoRes'].get('item_list') or []
+                    if lst:
+                        item = lst[0]
+                    break
+            if item is None:
+                last_reason = '作品不可用（可能已删除 / 私密 / 需要登录）'
+                continue
+            return self._normalize_share_detail(item, ratio=self.protocol_ratio), ''
+
+        return None, last_reason
+
+    def get_aweme_detail(self, video_id, wait_seconds=40, retries=2):
+        """获取作品详情（aweme_detail 结构）；失败返回 None。
+
+        取数方式由环境变量 DOUYIN_FETCH_MODE 控制：
+          - auto（默认）：先走协议（纯 HTTP，秒级、不开浏览器），被风控才回退浏览器
+          - protocol    ：只用协议，任何情况都不启动浏览器
+          - browser     ：只用浏览器监听 aweme/detail（旧行为）
+        """
+        # ---------- 1) 协议优先 ----------
+        if self.fetch_mode != 'browser' and not self._protocol_disabled:
+            detail, reason = self._detail_from_share_page(video_id)
+            if detail is not None:
+                self._protocol_fail_streak = 0
+                print(f'⚡ [{video_id}] 协议模式取到详情（未使用浏览器）')
+                return detail
+            self._protocol_fail_streak += 1
+            print(f'⚠️ [{video_id}] 协议模式失败：{reason}')
+            if self.fetch_mode == 'protocol':
+                return None
+            if self._protocol_fail_streak >= self.PROTOCOL_FAIL_LIMIT:
+                self._protocol_disabled = True
+                print(f'ℹ️ 协议模式连续失败 {self._protocol_fail_streak} 次，'
+                      f'本次运行剩余任务改用浏览器模式')
+
+        # ---------- 2) 浏览器回退 ----------
         self._ensure_browser()
         url = f'https://www.douyin.com/video/{video_id}'
         data = None
