@@ -25,6 +25,7 @@
 
 - Python 3.9+
 - **ffmpeg 与 ffprobe**（合并音视频、图文转视频需要，且 ffmpeg 需带 drawtext 等常规能力）
+- Python 包依赖全部在 `requirements.txt` 里，其中 **Pillow** 用于图文作品的图片规格化，缺了「图文作品」会下载成功但合并失败
 
 ## 安装
 
@@ -102,6 +103,12 @@ legacy/                 # 2024 年旧版实现（方案已失效，仅作留存�
 
 **Q：提示未安装 playwright？**
 执行 `pip install playwright && playwright install chromium`。
+
+**Q：下载图文作品时报「图文合并失败」？**
+先看紧跟其后的原因。如果是 **缺少 Pillow 依赖**，执行 `pip install Pillow`（或 `pip install -r requirements.txt`）即可 ——
+图片和音频已经下好了，报错信息里会给出保存目录，装完可直接重跑，不用重新下载。
+老版本这条路径的报错是「图文合并失败（缺少图片或音频）」，原因是 `ImportError` 被内部的 `except Exception` 吞掉了，
+容易误判成风控问题（已在 2026-09-18 修正为明确提示）。
 
 **Q：报错 `No such filter: 'drawtext'`/ 音视频合并失败？**
 检查 ffmpeg 是否完整安装，命令行直接跑 `ffmpeg -filters | grep drawtext` 确认。

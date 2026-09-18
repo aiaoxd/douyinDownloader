@@ -16,6 +16,20 @@ import ffmpeg
 import util
 import path_config
 
+# Pillow 只在「图文作品」的图片规格化里用到。放到顶层统一导入并单独捕获 ImportError，
+# 避免它碎在 combine_static_photo() 的 except Exception 里 —— 那样真实原因会被吞掉，
+# 使用者最后只看到笼统的「图文合并失败」，排查成本很高。
+try:
+    from PIL import Image
+except ImportError:  # 缺 Pillow 不影响普通视频 / 实况图下载
+    Image = None
+
+PILLOW_HINT = (
+    '缺少依赖 Pillow —— 图文作品的图片规格化需要它。\n'
+    '    请执行：pip install Pillow   （或 pip install -r requirements.txt）后重试'
+)
+
+
 class DouyinDownloader:
     # 浏览器监听方案使用的桌面 UA
     UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
@@ -371,13 +385,23 @@ class DouyinDownloader:
                 print(f"Failed to retrieve the video for {title}.")
 
     def combine_static_photo(self, img_folder):
+        """把图文作品的图片 + 背景音乐合成为 mp4。
+
+        返回 (ok: bool, reason: str)。失败时 reason 给出具体原因，
+        由调用方打印准确的错误信息，而不是笼统的「缺少图片或音频」。
+        """
+        # 依赖检查放最前面，缺 Pillow 时一眼能看出来
+        if Image is None:
+            print(f"❌ {PILLOW_HINT}")
+            return False, '缺少 Pillow 依赖'
+
         # 获取所有的jpg文件，匹配模式 foldername_1.jpg, foldername_2.jpg, ...
         jpg_files = glob(os.path.join(img_folder, "*_*.jpg"))
         print("JPG Files:", jpg_files)
 
         if not jpg_files:
             print("没有找到任何图片")
-            return
+            return False, '没有下载到任何图片'
 
         # 对图片排序，确保顺序正确
         jpg_files.sort()
@@ -393,18 +417,20 @@ class DouyinDownloader:
         for img_file in jpg_files:
             try:
                 # 使用 PIL 将图片保存为标准 JPEG 格式，确保图片大小一致
-                from PIL import Image
                 img = Image.open(img_file)
                 img = img.convert('RGB')  # 转换为RGB模式，避免一些图像处理库不能处理的问题
                 img = img.resize((1080,1920))  # 将图片调整为固定大小，确保一致性
                 img.save(img_file, 'JPEG')  # 保存为标准 JPEG 格式
             except Exception as e:
-                print(f"处理图片 {img_file} 时出错: {e}")
-                return
+                # 带上异常类型，别让真实原因被淹没
+                print(f"处理图片 {img_file} 时出错: {type(e).__name__}: {e}")
+                return False, f'处理图片失败（{os.path.basename(img_file)}）'
 
         # 通过 ffmpeg 将图片合成视频
+        # -nostdin：ffmpeg 默认会读取标准输入，当 stdin 不是终端（nohup / 管道 / 计划任务）时会一直阻塞不退出
         subprocess.run([
             'ffmpeg',
+            '-nostdin',
             '-framerate', str(frame_rate),  # 每秒多少帧
             '-pattern_type', 'glob',  # 使用 glob 模式匹配文件
             '-i', os.path.join(img_folder, '*_*.jpg'),  # 图片文件路径，假设文件名为 *_*.jpg
@@ -415,6 +441,10 @@ class DouyinDownloader:
             '-y', '-loglevel', 'error',  # 强制覆盖输出文件
             output_video  # 输出文件路径
         ])
+
+        if not os.path.exists(output_video):
+            print("ffmpeg 合成图片视频失败（见上面的 ffmpeg 输出）")
+            return False, 'ffmpeg 合成图片视频失败'
 
         print(f"视频已生成并保存至: {output_video}")
 
@@ -427,13 +457,13 @@ class DouyinDownloader:
         mp3_files = glob(os.path.join(img_folder, "*.mp3"))
         if not mp3_files:
             print("没有找到 MP3 文件")
-            return
+            return False, '没有下载到背景音乐（MP3）'
 
         mp3_file = mp3_files[0]
         print("MP3 文件:", mp3_file)
 
         # 获取音频时长（秒）
-        audio_duration_cmd = ['ffmpeg', '-i', mp3_file]
+        audio_duration_cmd = ['ffmpeg', '-nostdin', '-i', mp3_file]
         audio_duration_result = subprocess.run(audio_duration_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
                                                text=True)
         audio_duration_output = audio_duration_result.stderr
@@ -449,6 +479,7 @@ class DouyinDownloader:
             # 重新编码音频并裁剪，确保音频格式正确
             subprocess.run([
                 'ffmpeg',
+                '-nostdin',
                 '-i', mp3_file,  # 输入音频文件
                 '-t', str(video_duration),  # 设置音频裁剪的时长为视频时长
                 '-acodec', 'libmp3lame',  # 重新编码为 MP3 格式
@@ -463,6 +494,7 @@ class DouyinDownloader:
         output_video_with_audio = os.path.join(img_folder, "final_output_video.mp4")
         subprocess.run([
             'ffmpeg',
+            '-nostdin',
             '-i', output_video,  # 输入视频文件
             '-i', mp3_file,  # 输入音频文件
             '-c:v', 'libx264',  # 视频编码
@@ -472,7 +504,12 @@ class DouyinDownloader:
             output_video_with_audio  # 输出文件路径
         ])
 
+        if not os.path.exists(output_video_with_audio):
+            print("ffmpeg 合并音视频失败（见上面的 ffmpeg 输出）")
+            return False, 'ffmpeg 合并音视频失败'
+
         print(f"最终视频已生成并保存至: {output_video_with_audio}")
+        return True, ''
 
     # ===================== 浏览器监听方案（接自 v2：Playwright 监听 aweme/detail） =====================
     @staticmethod
@@ -663,14 +700,15 @@ class DouyinDownloader:
                 if u:
                     self.download_audio(u, os.path.join(folder, f'{title}.mp3'))
                     break
-            self.combine_static_photo(folder)
+            ok, reason = self.combine_static_photo(folder)
             video_path = os.path.join(self.download_folder, f'{video_index}_{title}.mp4')
             final_file = os.path.join(folder, 'final_output_video.mp4')
-            if os.path.exists(final_file):
+            if ok and os.path.exists(final_file):
                 shutil.move(final_file, video_path)
                 print('✅ 图文已下载并合并完成')
                 return video_path, title
-            print('❌ 图文合并失败（缺少图片或音频）')
+            print(f'❌ 图文合并失败：{reason}')
+            print(f'   图片与音频已保留在 {folder}，解决后可直接重跑合并，无需重新下载')
             return None, title
 
         # ---------- 动图作品（media_type == 42） ----------
